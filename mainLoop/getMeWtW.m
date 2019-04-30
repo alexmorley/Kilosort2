@@ -18,5 +18,8 @@ if nargin>2 && nargout>1
     [~, isort] = sort(cc, 1, 'descend');
     
     iNear = rem([1:Nnearest]-1, Nfilt) + 1;
+    if all(isnan(iNear))
+        iNear = ones(size(iNear ));
+    end
     iList = int32(gpuArray(isort(iNear, :)));
 end

@@ -26,8 +26,7 @@ Nnearest    = min(ops.Nchan, 32);
 
 sigmaMask  = ops.sigmaMask;
 
-
-ops.spkTh = -6; % why am I overwriting this here?
+%ops.spkTh = -6; % why am I overwriting this here?
 
 nt0 = ops.nt0;
 nt0min  = rez.ops.nt0min; 
@@ -63,10 +62,9 @@ t0 = ceil(rez.ops.trange(1) * ops.fs);
 
 nInnerIter  = 60;
 
-
 pmi = exp(-1./linspace(ops.momentum(1), ops.momentum(2), niter-nBatches));
 
-Nsum = 7; % how many channels to extend out the waveform in mexgetspikes
+Nsum = min(ops.Nchan, 7);
 Params     = double([NT Nfilt ops.Th(1) nInnerIter nt0 Nnearest ...
     Nrank ops.lam pmi(1) Nchan NchanNear ops.nt0min 1 Nsum NrankPC ops.Th(1)]);
 
@@ -89,7 +87,9 @@ fid = fopen(ops.fproc, 'r');
 ntot = 0;
 ndrop = zeros(1,2);
 
-m0 = ops.minFR * ops.NT/ops.fs;
+m0 = ops.minFR * ops.NT/ops.fs; % per batch min spikes
+
+NO_SPK_FLAG=false;
 
 for ibatch = 1:niter
     
@@ -102,7 +102,7 @@ for ibatch = 1:niter
         fprintf('reverted back to middle timepoint \n')
     end
 
-    if ibatch<=niter-nBatches
+    if ibatch<=niter-nBatches % get momentum array
         Params(9) = pmi(ibatch);
         pm = pmi(ibatch) * gpuArray.ones(Nfilt, 1, 'double');
     end
@@ -116,7 +116,7 @@ for ibatch = 1:niter
 
     
     if ibatch==1            
-        [dWU, cmap] = mexGetSpikes2(Params, dataRAW, wTEMP, iC-1);        
+        [dWU, cmap] = mexGetSpikes2(Params, dataRAW, wTEMP, iC-1); 
 %         dWU = mexGetSpikes(Params, dataRAW, wPCA);
         dWU = double(dWU);
         dWU = reshape(wPCAd * (wPCAd' * dWU(:,:)), size(dWU));
@@ -140,7 +140,7 @@ for ibatch = 1:niter
 
     % decompose dWU by svd of time and space (61 by 61)
     [W, U, mu] = mexSVDsmall2(Params, dWU, W, iC-1, iW-1, Ka, Kb);
-  
+    
     % this needs to change
     [UtU, maskU] = getMeUtU(iW, iC, mask, Nnearest, Nchan);
    
@@ -151,7 +151,13 @@ for ibatch = 1:niter
    
     fexp = exp(double(nsp0).*log(pm(1:Nfilt)));
     fexp = reshape(fexp, 1,1,[]);
-    nsp = nsp * p1 + (1-p1) * double(nsp0);
+    if size(nsp,1)==size(nsp0,1)
+        %disp('noflip');
+        nsp = nsp * p1 + (1-p1) * double(nsp0);
+    else
+        disp('flip');
+        nsp = nsp' * p1 + (1-p1) * double(nsp0);
+    end
     dWU = dWU .* fexp + (1-fexp) .* (dWU0./reshape(max(1, double(nsp0)), 1,1, []));
     
     % \\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\\
@@ -167,6 +173,12 @@ for ibatch = 1:niter
         Nfilt = size(W,2);
         Params(2) = Nfilt;
 
+        % deal with empty batch
+        if (size(W,2) == 0)
+            NO_SPK_FLAG=true;
+            break
+        end
+        
         [WtW, iList] = getMeWtW(single(W), single(U), Nnearest);
 
         [~, iW] = max(abs(dWU(nt0min, :, :)), [], 2);
@@ -184,6 +196,7 @@ for ibatch = 1:niter
 
     if ibatch<niter-nBatches %-50
         if rem(ibatch, 5)==1
+            %disp('Drop Templates')
             % this drops templates
             [W, U, dWU, mu, nsp, ndrop] = ...
                 triageTemplates2(ops, iW, C2C, W, U, dWU, mu, nsp, ndrop);
@@ -201,7 +214,8 @@ for ibatch = 1:niter
             dWU = cat(3, dWU, dWU0);
 
             W(:,Nfilt + [1:size(dWU0,3)],:) = W0(:,ones(1,size(dWU0,3)),:);
-
+            
+            %disp('Reset nsp') 
             nsp(Nfilt + [1:size(dWU0,3)]) = ops.minFR * NT/ops.fs;
             mu(Nfilt + [1:size(dWU0,3)])  = 10;            
 
@@ -213,10 +227,12 @@ for ibatch = 1:niter
             nsp = nsp(1:Nfilt);
             mu  = mu(1:Nfilt);            
         end
-
     end
 
-    if ibatch>niter-nBatches        
+    if ibatch>niter-nBatches 
+        if (ibatch-(niter-nBatches) == 100)
+            disp('a')
+        end
         rez.WA(:,:,:,k) = gather(W);
         rez.UA(:,:,:,k) = gather(U);
         rez.muA(:,k) = gather(mu);
@@ -249,7 +265,8 @@ for ibatch = 1:niter
         ntot = ntot + numel(x0);
     end
 
-    if ibatch==niter-nBatches        
+    if ibatch==niter-nBatches
+        
         st3 = zeros(1e7, 5);
         rez.WA = zeros(nt0, Nfilt, Nrank,nBatches,  'single');
         rez.UA = zeros(Nchan, Nfilt, Nrank,nBatches,  'single');
@@ -260,8 +277,9 @@ for ibatch = 1:niter
     end
 
     if rem(ibatch, 100)==1
+        
         fprintf('%2.2f sec, %d / %d batches, %d units, nspks: %2.4f, mu: %2.4f, nst0: %d, merges: %2.4f, %2.4f \n', ...
-            toc, ibatch, niter, Nfilt, sum(nsp), median(mu), numel(st0), ndrop)
+            toc, ibatch, niter, Nfilt, sum(nsp), median(gather(mu)), numel(st0), ndrop)
 
 %         keyboard;
         
@@ -271,7 +289,7 @@ for ibatch = 1:niter
             figure(figHand);
         end
        
-       if ops.fig
+       if 0 %ops.fig
            subplot(2,2,1)
            imagesc(W(:,:,1))
            title('Temporal Components')
@@ -303,59 +321,68 @@ for ibatch = 1:niter
     end
 end
 
+
 fclose(fid);
 
 toc
 
+if NO_SPK_FLAG
+    st3 = zeros(0,5);
+    rez.st3 = st3;
+    rez.st2 = st3;
+    rez.no_spk = true;
+else
+    rez.no_spk = false;
+    st3 = st3(1:ntot, :);
+    fW = fW(:, 1:ntot);
+    fWpc = fWpc(:,:, 1:ntot);
 
-st3 = st3(1:ntot, :);
-fW = fW(:, 1:ntot);
-fWpc = fWpc(:,:, 1:ntot);
+    ntot
 
-ntot
+    % [~, isort] = sort(st3(:,1), 'ascend');
+    % fW = fW(:, isort);
+    % fWpc = fWpc(:,:,isort);
+    % st3 = st3(isort, :);
 
-% [~, isort] = sort(st3(:,1), 'ascend');
-% fW = fW(:, isort);
-% fWpc = fWpc(:,:,isort);
-% st3 = st3(isort, :);
+    rez.st3 = st3;
+    rez.st2 = st3;
 
-rez.st3 = st3;
-rez.st2 = st3;
+    rez.simScore = gather(max(WtW, [], 3));
 
-rez.simScore = gather(max(WtW, [], 3));
+    rez.cProj    = fW';
+    rez.iNeigh   = gather(iList);
 
-rez.cProj    = fW';
-rez.iNeigh   = gather(iList);
+    rez.ops = ops;
 
-rez.ops = ops;
+    rez.nsp = nsp;
 
-rez.nsp = nsp;
+    % nNeighPC        = size(fWpc,1);
+    rez.cProjPC     = permute(fWpc, [3 2 1]); %zeros(size(st3,1), 3, nNeighPC, 'single');
 
-% nNeighPC        = size(fWpc,1);
-rez.cProjPC     = permute(fWpc, [3 2 1]); %zeros(size(st3,1), 3, nNeighPC, 'single');
+    % [~, iNch]       = sort(abs(rez.U(:,:,1)), 1, 'descend');
+    % maskPC          = zeros(Nchan, Nfilt, 'single');
+    rez.iNeighPC    = gather(iC(:, iW));
 
-% [~, iNch]       = sort(abs(rez.U(:,:,1)), 1, 'descend');
-% maskPC          = zeros(Nchan, Nfilt, 'single');
-rez.iNeighPC    = gather(iC(:, iW));
+    save('rez2.mat', 'rez', '-v7.3')
 
+    nKeep = 8; % how many PCs to keep
+    rez.W_a = zeros(nt0 * Nrank, nKeep, Nfilt, 'single');
+    rez.W_b = zeros(nBatches, nKeep, Nfilt, 'single');
+    rez.U_a = zeros(Nchan* Nrank, nKeep, Nfilt, 'single');
+    rez.U_b = zeros(nBatches, nKeep, Nfilt, 'single');
+    for j = 1:Nfilt    
+        WA = reshape(rez.WA(:, j, :, :), [], nBatches);
+        WA = gpuArray(WA);
+        [A, B, C] = svdecon(WA);
+        rez.W_a(:,:,j) = gather(A(:, 1:nKeep) * B(1:nKeep, 1:nKeep));
+        rez.W_b(:,:,j) = gather(C(:, 1:nKeep));
 
-nKeep = 20; % how many PCs to keep
-rez.W_a = zeros(nt0 * Nrank, nKeep, Nfilt, 'single');
-rez.W_b = zeros(nBatches, nKeep, Nfilt, 'single');
-rez.U_a = zeros(Nchan* Nrank, nKeep, Nfilt, 'single');
-rez.U_b = zeros(nBatches, nKeep, Nfilt, 'single');
-for j = 1:Nfilt    
-    WA = reshape(rez.WA(:, j, :, :), [], nBatches);
-    WA = gpuArray(WA);
-    [A, B, C] = svdecon(WA);
-    rez.W_a(:,:,j) = gather(A(:, 1:nKeep) * B(1:nKeep, 1:nKeep));
-    rez.W_b(:,:,j) = gather(C(:, 1:nKeep));
-    
-    UA = reshape(rez.UA(:, j, :, :), [], nBatches);
-    UA = gpuArray(UA);
-    [A, B, C] = svdecon(UA);
-    rez.U_a(:,:,j) = gather(A(:, 1:nKeep) * B(1:nKeep, 1:nKeep));
-    rez.U_b(:,:,j) = gather(C(:, 1:nKeep));
+        UA = reshape(rez.UA(:, j, :, :), [], nBatches);
+        UA = gpuArray(UA);
+        [A, B, C] = svdecon(UA);
+        rez.U_a(:,:,j) = gather(A(:, 1:nKeep) * B(1:nKeep, 1:nKeep));
+        rez.U_b(:,:,j) = gather(C(:, 1:nKeep));
+    end
 end
 
 fprintf('Finished compressing time-varying templates \n')

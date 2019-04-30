@@ -9,7 +9,7 @@ if getOr(ops, 'reorder', 0)==0
 end
     
 nPCs    = getOr(rez.ops, 'nPCs', 3);
-% Nfilt   = rez.ops.Nfilt;
+%Nfilt   = rez.ops.Nfilt;
 Nfilt = ceil(rez.ops.Nchan/2);
 
 % extract PC projections here
@@ -148,7 +148,7 @@ end
 
 ccb0 = zscore(ccb, 1, 1);
 ccb0 = ccb0 + ccb0';
-
+ccb0(isnan(ccb0)) = 0;
 rez.ccb = gather(ccb0);
 
 % sort by new manifold algorithm

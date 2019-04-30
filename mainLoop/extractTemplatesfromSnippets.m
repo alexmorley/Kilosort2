@@ -51,6 +51,11 @@ fclose(fid);
 
 dd = dd(:, 1:k);
 
+if nPCs > size(dd,2)
+    disp(size(nPCs))
+    disp(size(dd))
+    nPCs = size(dd,2)
+end
 wTEMP = dd(:, randperm(size(dd,2), nPCs));
 wTEMP = wTEMP ./ sum(wTEMP.^2,1).^.5;
 

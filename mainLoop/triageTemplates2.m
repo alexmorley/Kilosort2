@@ -4,12 +4,14 @@ function [W, U, dWU, mu, nsp, ndrop] = ...
 m0 = ops.minFR * ops.NT/ops.fs;
 idrop = nsp<m0;
 
+
 W(:,idrop,:) = [];
 U(:,idrop,:) = [];
 dWU(:,:, idrop) = [];
 mu(idrop) = [];
 nsp(idrop) = [];
 ndrop(1) = .9 * ndrop(1) + .1*gather(sum(idrop));
+
 
 % 
 cc = getMeWtW2(W, U);
